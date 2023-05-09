@@ -18,7 +18,7 @@ _Engine = create_engine(
     echo=False,
     poolclass=QueuePool,
     pool_pre_ping=True,
-    pool_size=50,
+    pool_size=100,
     pool_recycle=60 * 10,
     max_overflow=0
 )
@@ -70,6 +70,8 @@ class MediaDb:
             if server_type and library:
                 self.session.query(MEDIASYNCITEMS).filter(MEDIASYNCITEMS.SERVER == server_type,
                                                           MEDIASYNCITEMS.LIBRARY == library).delete()
+            elif server_type:
+                self.session.query(MEDIASYNCITEMS).filter(MEDIASYNCITEMS.SERVER == server_type).delete()
             else:
                 self.session.query(MEDIASYNCITEMS).delete()
             self.session.commit()
@@ -119,7 +121,7 @@ class MediaDb:
             item = self.session.query(MEDIASYNCITEMS).filter(MEDIASYNCITEMS.SERVER == server_type,
                                                              MEDIASYNCITEMS.TITLE == title).first()
         if item:
-            if tmdbid and (not item.TMDBID or item.TMDBID == str(tmdbid)):
+            if tmdbid and (not item.TMDBID or item.TMDBID != str(tmdbid)):
                 return {}
         return item
 

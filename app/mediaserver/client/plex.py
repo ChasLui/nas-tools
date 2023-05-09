@@ -1,9 +1,13 @@
-from app.utils import ExceptionUtils
-from app.utils.types import MediaServerType
-
+import os
+from collections import OrderedDict
+from functools import lru_cache
+from urllib.parse import quote_plus
 import log
-from config import Config
 from app.mediaserver.client._base import _IMediaClient
+from app.utils import ExceptionUtils
+from app.utils.types import MediaServerType, MediaType
+from config import Config
+from plexapi import media
 from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
@@ -24,6 +28,7 @@ class Plex(_IMediaClient):
     _password = None
     _servername = None
     _plex = None
+    _play_host = None
     _libraries = []
 
     def __init__(self, config=None):
@@ -42,6 +47,18 @@ class Plex(_IMediaClient):
                     self._host = "http://" + self._host
                 if not self._host.endswith('/'):
                     self._host = self._host + "/"
+            self._play_host = self._client_config.get('play_host')
+            if not self._play_host:
+                self._play_host = self._host
+            else:
+                if not self._play_host.startswith('http'):
+                    self._play_host = "http://" + self._play_host
+                if not self._play_host.endswith('/'):
+                    self._play_host = self._play_host + "/"
+            if "app.plex.tv" in self._play_host:
+                self._play_host = self._play_host + "desktop/"
+            else:
+                self._play_host = self._play_host + "web/index.html"
             self._username = self._client_config.get('username')
             self._password = self._client_config.get('password')
             self._servername = self._client_config.get('servername')
@@ -88,7 +105,7 @@ class Plex(_IMediaClient):
             return []
         ret_array = []
         try:
-            # type的含义: 1 电影 4 剧集单集
+            # type的含义: 1 电影 4 剧集单集 详见 plexapi/utils.py中SEARCHTYPES的定义
             # 根据最后播放时间倒序获取数据
             historys = self._plex.library.search(sort='lastViewedAt:desc', limit=num, type='1,4')
             for his in historys:
@@ -215,10 +232,54 @@ class Plex(_IMediaClient):
         total_episodes = [episode for episode in range(1, total_num + 1)]
         return list(set(total_episodes).difference(set(exists_episodes)))
 
-    @staticmethod
-    def get_image_by_id(**kwargs):
+    def get_episode_image_by_id(self, item_id, season_id, episode_id):
         """
-        根据ItemId从Plex查询图片地址，该函数Plex下不使用
+        根据itemid、season_id、episode_id从Plex查询图片地址
+        :param item_id: 在Plex中具体的一集的ID
+        :param season_id: 季,目前没有使用
+        :param episode_id: 集,目前没有使用
+        :return: 图片对应在TMDB中的URL
+        """
+        if not self._plex:
+            return None
+        try:
+            images = self._plex.fetchItems('/library/metadata/%s/posters' % item_id, cls=media.Poster)
+            for image in images:
+                if hasattr(image, 'key') and image.key.startswith('http'):
+                    return image.key
+            return None
+        except Exception as e:
+            ExceptionUtils.exception_traceback(e)
+            log.error(f"【{self.client_name}】获取剧集封面出错：" + str(e))
+            return None
+
+    def get_remote_image_by_id(self, item_id, image_type):
+        """
+        根据ItemId从Plex查询图片地址
+        :param item_id: 在Emby中的ID
+        :param image_type: 图片的类型，Poster或者Backdrop等
+        :return: 图片对应在TMDB中的URL
+        """
+        if not self._plex:
+            return None
+        try:
+            if image_type == "Poster":
+                images = self._plex.fetchItems('/library/metadata/%s/posters' % item_id, cls=media.Poster)
+            else:
+                images = self._plex.fetchItems('/library/metadata/%s/arts' % item_id, cls=media.Art)
+            for image in images:
+                if hasattr(image, 'key') and image.key.startswith('http'):
+                    return image.key
+        except Exception as e:
+            ExceptionUtils.exception_traceback(e)
+            log.error(f"【{self.client_name}】获取封面出错：" + str(e))
+        return None
+
+    def get_local_image_by_id(self, item_id, remote=True):
+        """
+        根据ItemId从媒体服务器查询有声书图片地址
+        :param item_id: 在Emby中的ID
+        :param remote: 是否远程使用
         """
         return None
 
@@ -232,11 +293,51 @@ class Plex(_IMediaClient):
 
     def refresh_library_by_items(self, items):
         """
-        按类型、名称、年份来刷新媒体库，未找到对应的API，直接刷整个库
+        按路径刷新媒体库
         """
         if not self._plex:
             return False
-        return self._plex.library.update()
+        # _libraries可能未初始化,初始化一下
+        if not self._libraries:
+            try:
+                self._libraries = self._plex.library.sections()
+            except Exception as err:
+                ExceptionUtils.exception_traceback(err)
+        result_dict = {}
+        for item in items:
+            file_path = item.get("file_path")
+            lib_key, path = self.__find_librarie(file_path, self._libraries)
+            # 如果存在同一剧集的多集,key(path)相同会合并
+            result_dict[path] = lib_key
+        if "" in result_dict:
+            # 如果有匹配失败的,刷新整个库
+            self._plex.library.update()
+        else:
+            # 否则一个一个刷新
+            for path, lib_key in result_dict.items():
+                log.info(f"【{self.client_name}】刷新媒体库：{lib_key} : {path}")
+                self._plex.query(f'/library/sections/{lib_key}/refresh?path={quote_plus(path)}')
+
+    @staticmethod
+    def __find_librarie(path, libraries):
+        """
+        判断这个path属于哪个媒体库
+        多个媒体库配置的目录不应有重复和嵌套,
+        使用os.path.commonprefix([path, location]) == location应该没问题
+        """
+        if path is None:
+            return "", ""
+        # 只要路径,不要文件名
+        dir_path = os.path.dirname(path)
+        try:
+            for lib in libraries:
+                if hasattr(lib, "locations") and lib.locations:
+                    for location in lib.locations:
+                        if os.path.commonprefix([dir_path, location]) == location:
+                            return lib.key, dir_path
+        except Exception as err:
+            ExceptionUtils.exception_traceback(err)
+        return "", ""
 
     def get_libraries(self):
         """
@@ -251,8 +352,65 @@ class Plex(_IMediaClient):
             return []
         libraries = []
         for library in self._libraries:
-            libraries.append({"id": library.key, "name": library.title})
+            match library.type:
+                case "movie":
+                    library_type = MediaType.MOVIE.value
+                    image_list_str = self.get_libraries_image(library.key, 1)
+                case "show":
+                    library_type = MediaType.TV.value
+                    image_list_str = self.get_libraries_image(library.key, 2)
+                case _:
+                    continue
+            libraries.append({
+                "id": library.key,
+                "name": library.title,
+                "paths": library.locations,
+                "type": library_type,
+                "image_list": image_list_str,
+                "link": f"{self._play_host or self._host}#!/media/{self._plex.machineIdentifier}"
+                        f"/com.plexapp.plugins.library?source={library.key}"
+            })
         return libraries
+
+    @lru_cache(maxsize=10)
+    def get_libraries_image(self, library_key, type):
+        """
+        获取媒体服务器最近添加的媒体的图片列表
+        param: library_key
+        param: type type的含义: 1 电影 2 剧集 详见 plexapi/utils.py中SEARCHTYPES的定义
+        """
+        if not self._plex:
+            return ""
+        # 返回结果
+        poster_urls = {}
+        # 页码计数
+        container_start = 0
+        # 需要的总条数/每页的条数
+        total_size = 4
+
+        # 如果总数不足,接续获取下一页
+        while len(poster_urls) < total_size:
+            items = self._plex.fetchItems(f"/hubs/home/recentlyAdded?type={type}&sectionID={library_key}",
+                                          container_size=total_size,
+                                          container_start=container_start)
+            for item in items:
+                if item.type == 'episode':
+                    # 如果是剧集的单集,则去找上级的图片
+                    if item.parentThumb is not None:
+                        poster_urls[item.parentThumb] = None
+                else:
+                    # 否则就用自己的图片
+                    if item.thumb is not None:
+                        poster_urls[item.thumb] = None
+                if len(poster_urls) == total_size:
+                    break
+            if len(items) < total_size:
+                break
+            container_start += total_size
+        image_list_str = ", ".join(
+            [f"{self.get_nt_image_url(self._host.rstrip('/') + url)}?X-Plex-Token={self._token}" for url in
+             list(poster_urls.keys())[:total_size]])
+        return image_list_str
 
     def get_iteminfo(self, itemid):
         """
@@ -267,6 +425,13 @@ class Plex(_IMediaClient):
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
             return {}
+
+    def get_play_url(self, item_id):
+        """
+        拼装媒体播放链接
+        :param item_id: 媒体的的ID
+        """
+        return f'{self._play_host or self._host}#!/server/{self._plex.machineIdentifier}/details?key={item_id}'
 
     def get_items(self, parent):
         """
@@ -295,8 +460,7 @@ class Plex(_IMediaClient):
                            "tmdbid": ids['tmdb_id'],
                            "imdbid": ids['imdb_id'],
                            "tvdbid": ids['tvdb_id'],
-                           "path": path,
-                           "json": str(item.__dict__)}
+                           "path": path}
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
         yield {}
@@ -334,9 +498,10 @@ class Plex(_IMediaClient):
         sessions = self._plex.sessions()
         ret_sessions = []
         for session in sessions:
+            bitrate = sum([m.bitrate or 0 for m in session.media])
             ret_sessions.append({
                 "type": session.TAG,
-                "bitrate": sum([m.bitrate for m in session.media]),
+                "bitrate": bitrate,
                 "address": session.player.address
             })
         return ret_sessions
@@ -360,8 +525,7 @@ class Plex(_IMediaClient):
                     "S" + str(message.get('Metadata', {}).get('parentIndex')),
                     "E" + str(message.get('Metadata', {}).get('index')),
                     message.get('Metadata', {}).get('title'))
-
-                eventItem['item_id'] = message.get('Metadata', {}).get('grandparentKey')
+                eventItem['item_id'] = message.get('Metadata', {}).get('ratingKey')
                 eventItem['season_id'] = message.get('Metadata', {}).get('parentIndex')
                 eventItem['episode_id'] = message.get('Metadata', {}).get('index')
 
@@ -373,10 +537,7 @@ class Plex(_IMediaClient):
                 eventItem['item_type'] = "MOV"
                 eventItem['item_name'] = "%s %s" % (
                     message.get('Metadata', {}).get('title'), "(" + str(message.get('Metadata', {}).get('year')) + ")")
-
-                ids = self.__get_ids(message.get('Metadata', {}).get('Guid', {}))
-                eventItem['tmdb_id'] = ids['tmdb_id']
-
+                eventItem['item_id'] = message.get('Metadata', {}).get('ratingKey')
                 if len(message.get('Metadata', {}).get('summary')) > 100:
                     eventItem['overview'] = str(message.get('Metadata', {}).get('summary'))[:100] + "..."
                 else:
@@ -390,3 +551,55 @@ class Plex(_IMediaClient):
             eventItem['user_name'] = message.get("Account").get('title')
 
         return eventItem
+
+    def get_resume(self, num=12):
+        """
+        获取继续观看的媒体
+        """
+        if not self._plex:
+            return []
+        items = self._plex.fetchItems('/hubs/continueWatching/items', container_start=0, container_size=num)
+        ret_resume = []
+        for item in items:
+            item_type = MediaType.MOVIE.value if item.TYPE == "movie" else MediaType.TV.value
+            if item_type == MediaType.MOVIE.value:
+                name = item.title
+            else:
+                if item.parentIndex == 1:
+                    name = "%s 第%s集" % (item.grandparentTitle, item.index)
+                else:
+                    name = "%s 第%s季第%s集" % (item.grandparentTitle, item.parentIndex, item.index)
+            link = self.get_play_url(item.key)
+            image = self.get_nt_image_url(item.artUrl)
+            ret_resume.append({
+                "id": item.key,
+                "name": name,
+                "type": item_type,
+                "image": image,
+                "link": link,
+                "percent": item.viewOffset / item.duration * 100 if item.viewOffset and item.duration else 0
+            })
+        return ret_resume
+
+    def get_latest(self, num=20):
+        """
+        获取最近添加媒体
+        """
+        if not self._plex:
+            return []
+        items = self._plex.fetchItems('/library/recentlyAdded', container_start=0, container_size=num)
+        ret_resume = []
+        for item in items:
+            item_type = MediaType.MOVIE.value if item.TYPE == "movie" else MediaType.TV.value
+            link = self.get_play_url(item.key)
+            title = item.title if item_type == MediaType.MOVIE.value else \
+                "%s 第%s季" % (item.parentTitle, item.index)
+            image = self.get_nt_image_url(item.posterUrl)
+            ret_resume.append({
+                "id": item.key,
+                "name": title,
+                "type": item_type,
+                "image": image,
+                "link": link
+            })
+        return ret_resume

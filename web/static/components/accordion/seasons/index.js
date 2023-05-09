@@ -51,7 +51,7 @@ export class AccordionSeasons extends CustomElement {
                   ${seasons.air_date ? html`<h3 class="ms-2 mt-2"> - ${seasons.air_date.split("-")[0]}</h3>` : nothing}
                   <div class="d-flex flex-grow-1 justify-content-between">
                     ${seasons.episode_count ? html`<div><strong class="badge badge-pill mx-3">共${seasons.episode_count}集</strong></div>` : nothing}
-                    ${seasons.state ? html`<div><strong class="badge badge-pill bg-green text-white mx-3">已下载</strong></div>`: nothing}
+                    ${seasons.state ? html`<div><strong class="badge badge-pill bg-green text-white mx-3">已入库</strong></div>`: nothing}
                   </div>
                 </button>
               </div>
@@ -61,13 +61,6 @@ export class AccordionSeasons extends CustomElement {
                 ? seasons.list.map((episodes, episodes_index) => (
                   html`
                     <div class="row pt-3 pb-3 custom-border-top">
-                      <style>
-                        @media (min-width: 992px) {
-                          .custom-border-top {
-                            border-top: 1px var(--tblr-border-style) rgba(97,104,118,.16)!important;
-                          }
-                        }
-                      </style>
                       <div class="col-lg-8">
                         <h3>
                           ${seasons.list.length - episodes_index} - ${episodes.name}
@@ -87,7 +80,7 @@ export class AccordionSeasons extends CustomElement {
                       <div class="col-lg-4 align-self-center">
                         ${episodes.still_path ? html`
                           <custom-img style="height: auto;"
-                              img-class="rounded-4 object-cover"
+                              img-class="rounded-3 object-cover"
                               img-ratio="50%"
                               img-src="${episodes.still_path}"
                           ></custom-img>` : nothing}

@@ -1,7 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-import log
 from app.plugins.modules._base import _IPluginModule
 from app.sync import Sync
 from config import Config
@@ -15,11 +14,13 @@ class SyncTimer(_IPluginModule):
     # 插件图标
     module_icon = "synctimer.png"
     # 主题色
-    module_color = ""
+    module_color = "#53BA48"
     # 插件版本
     module_version = "1.0"
     # 插件作者
     module_author = "jxxghp"
+    # 作者主页
+    author_url = "https://github.com/jxxghp"
     # 插件配置项ID前缀
     module_config_prefix = "synctimer_"
     # 加载顺序
@@ -45,12 +46,12 @@ class SyncTimer(_IPluginModule):
                         {
                             'title': '同步周期',
                             'required': "required",
-                            'tooltip': '仅适用于挂载网盘或网络共享等目录同步监控无法正常工作的场景下使用，正常挂载本地目录无法同步的，应优先查看日志解决问题，留空则不启动',
+                            'tooltip': '支持5位cron表达式；仅适用于挂载网盘或网络共享等目录同步监控无法正常工作的场景下使用，正常挂载本地目录无法同步的，应优先查看日志解决问题，留空则不启动',
                             'type': 'text',
                             'content': [
                                 {
                                     'id': 'cron',
-                                    'placeholder': '0 0 */2 * * ?',
+                                    'placeholder': '0 0 */2 * *',
                                 }
                             ]
                         }
@@ -72,10 +73,11 @@ class SyncTimer(_IPluginModule):
         # 启动定时任务
         if self._cron:
             self._scheduler = BackgroundScheduler(timezone=Config().get_timezone())
-            self._scheduler.add_job(self.__timersync, CronTrigger.from_crontab(self._cron))
+            self._scheduler.add_job(func=self.__timersync,
+                                    trigger=CronTrigger.from_crontab(self._cron))
             self._scheduler.print_jobs()
             self._scheduler.start()
-            log.info("目录定时同步服务启动")
+            self.info(f"目录定时同步服务启动，周期：{self._cron}")
 
     def get_state(self):
         return True if self._cron else False
@@ -84,7 +86,9 @@ class SyncTimer(_IPluginModule):
         """
         开始同步
         """
-        self._sync.transfer_all_sync()
+        self.info("开始定时同步 ...")
+        self._sync.transfer_sync()
+        self.info("定时同步完成")
 
     def stop_service(self):
         """

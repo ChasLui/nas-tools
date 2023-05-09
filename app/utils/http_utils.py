@@ -20,21 +20,24 @@ class RequestUtils:
                  session=None,
                  timeout=None,
                  referer=None,
-                 content_type=None):
+                 content_type=None,
+                 accept_type=None):
         if not content_type:
             content_type = "application/x-www-form-urlencoded; charset=UTF-8"
         if headers:
             if isinstance(headers, str):
                 self._headers = {
                     "Content-Type": content_type,
-                    "User-Agent": f"{headers}"
+                    "User-Agent": f"{headers}",
+                    "Accept": accept_type
                 }
             else:
                 self._headers = headers
         else:
             self._headers = {
                 "Content-Type": content_type,
-                "User-Agent": Config().get_ua()
+                "User-Agent": Config().get_ua(),
+                "Accept": accept_type
             }
         if referer:
             self._headers.update({
@@ -95,7 +98,7 @@ class RequestUtils:
         except requests.exceptions.RequestException:
             return None
 
-    def get_res(self, url, params=None, allow_redirects=True):
+    def get_res(self, url, params=None, allow_redirects=True, raise_exception=False):
         try:
             if self._session:
                 return self._session.get(url,
@@ -116,6 +119,8 @@ class RequestUtils:
                                     timeout=self._timeout,
                                     allow_redirects=allow_redirects)
         except requests.exceptions.RequestException:
+            if raise_exception:
+                raise requests.exceptions.RequestException
             return None
 
     def post_res(self, url, data=None, params=None, allow_redirects=True, files=None, json=None):
@@ -149,6 +154,12 @@ class RequestUtils:
 
     @staticmethod
     def cookie_parse(cookies_str, array=False):
+        """
+        解析cookie，转化为字典或者数组
+        :param cookies_str: cookie字符串
+        :param array: 是否转化为数组
+        :return: 字典或者数组
+        """
         if not cookies_str:
             return {}
         cookie_dict = {}

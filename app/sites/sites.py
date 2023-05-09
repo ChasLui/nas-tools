@@ -1,8 +1,10 @@
 import json
 from datetime import datetime
 
+import log
 from app.helper import ChromeHelper, SiteHelper, DbHelper
 from app.message import Message
+from app.sites.site_limiter import SiteRateLimiter
 from app.utils import RequestUtils, StringUtils
 from app.utils.commons import singleton
 from config import Config
@@ -21,6 +23,7 @@ class Sites:
     _brush_sites = []
     _statistic_sites = []
     _signin_sites = []
+    _limiters = {}
 
     _MAX_CONCURRENCY = 10
 
@@ -44,6 +47,8 @@ class Sites:
         self._statistic_sites = []
         # 开启签到功能站点：
         self._signin_sites = []
+        # 站点限速器
+        self._limiters = {}
         # 站点图标
         self.init_favicons()
         # 站点数据
@@ -58,16 +63,13 @@ class Sites:
             site_uses = site.INCLUDE or ''
             uses = []
             if site_uses:
-                signin_enable = True if "Q" in site_uses and site_signurl and site_cookie else False
                 rss_enable = True if "D" in site_uses and site_rssurl else False
                 brush_enable = True if "S" in site_uses and site_rssurl and site_cookie else False
                 statistic_enable = True if "T" in site_uses and (site_rssurl or site_signurl) and site_cookie else False
-                uses.append("Q") if signin_enable else None
                 uses.append("D") if rss_enable else None
                 uses.append("S") if brush_enable else None
                 uses.append("T") if statistic_enable else None
             else:
-                signin_enable = False
                 rss_enable = False
                 brush_enable = False
                 statistic_enable = False
@@ -80,7 +82,6 @@ class Sites:
                 "cookie": site_cookie,
                 "rule": site_note.get("rule"),
                 "download_setting": site_note.get("download_setting"),
-                "signin_enable": signin_enable,
                 "rss_enable": rss_enable,
                 "brush_enable": brush_enable,
                 "statistic_enable": statistic_enable,
@@ -91,6 +92,9 @@ class Sites:
                 "chrome": True if site_note.get("chrome") == "Y" else False,
                 "proxy": True if site_note.get("proxy") == "Y" else False,
                 "subtitle": True if site_note.get("subtitle") == "Y" else False,
+                "limit_interval": site_note.get("limit_interval"),
+                "limit_count": site_note.get("limit_count"),
+                "limit_seconds": site_note.get("limit_seconds"),
                 "strict_url": StringUtils.get_base_url(site_signurl or site_rssurl)
             }
             # 以ID存储
@@ -99,6 +103,19 @@ class Sites:
             site_strict_url = StringUtils.get_url_domain(site.SIGNURL or site.RSSURL)
             if site_strict_url:
                 self._siteByUrls[site_strict_url] = site_info
+            # 初始化站点限速器
+            if (site_note.get("limit_interval")
+                and str(site_note.get("limit_interval")).isdigit()
+                and site_note.get("limit_count")
+                and str(site_note.get("limit_count")).isdigit()) \
+                    or (site_note.get("limit_seconds")
+                        and str(site_note.get("limit_seconds")).isdigit()):
+                self._limiters[site.ID] = SiteRateLimiter(
+                    limit_interval=int(site_note.get("limit_interval")) * 60,
+                    limit_count=int(site_note.get("limit_count")),
+                    limit_seconds=int(site_note.get("limit_seconds")) if site_note.get("limit_seconds") and str(
+                        site_note.get("limit_seconds")).isdigit() else None
+                )
 
     def init_favicons(self):
         """
@@ -109,9 +126,9 @@ class Sites:
     def get_sites(self,
                   siteid=None,
                   siteurl=None,
+                  siteids=None,
                   rss=False,
                   brush=False,
-                  signin=False,
                   statistic=False):
         """
         获取站点配置
@@ -127,19 +144,62 @@ class Sites:
                 continue
             if brush and not site.get('brush_enable'):
                 continue
-            if signin and not site.get('signin_enable'):
-                continue
             if statistic and not site.get('statistic_enable'):
+                continue
+            if siteids and str(site.get('id')) not in siteids:
                 continue
             ret_sites.append(site)
         if siteid or siteurl:
             return {}
         return ret_sites
 
+    def check_ratelimit(self, site_id):
+        """
+        检查站点是否触发流控
+        :param site_id: 站点ID
+        :return: True为触发了流控，False为未触发
+        """
+        if not self._limiters.get(site_id):
+            return False
+        state, msg = self._limiters[site_id].check_rate_limit()
+        if msg:
+            log.warn(f"【Sites】站点 {self._siteByIds[site_id].get('name')} {msg}")
+        return state
+
+    def get_sites_by_suffix(self, suffix):
+        """
+        根据url的后缀获取站点配置
+        """
+        for key in self._siteByUrls:
+            # 使用.分割后再将最后两位(顶级域和二级域)拼起来
+            key_parts = key.split(".")
+            key_end = ".".join(key_parts[-2:])
+            # 将拼起来的结果与参数进行对比
+            if suffix == key_end:
+                return self._siteByUrls[key]
+        return {}
+
+    def get_sites_by_name(self, name):
+        """
+        根据站点名称获取站点配置
+        """
+        ret_sites = []
+        for site in self._siteByIds.values():
+            if site.get("name") == name:
+                ret_sites.append(site)
+        return ret_sites
+
+    def get_max_site_pri(self):
+        """
+        获取最大站点优先级
+        """
+        if not self._siteByIds:
+            return 0
+        return max([int(site.get("pri")) for site in self._siteByIds.values()])
+
     def get_site_dict(self,
                       rss=False,
                       brush=False,
-                      signin=False,
                       statistic=False):
         """
         获取站点字典
@@ -151,7 +211,6 @@ class Sites:
             } for site in self.get_sites(
                 rss=rss,
                 brush=brush,
-                signin=signin,
                 statistic=statistic
             )
         ]
@@ -159,7 +218,6 @@ class Sites:
     def get_site_names(self,
                        rss=False,
                        brush=False,
-                       signin=False,
                        statistic=False):
         """
         获取站点名称
@@ -168,7 +226,6 @@ class Sites:
             site.get("name") for site in self.get_sites(
                 rss=rss,
                 brush=brush,
-                signin=signin,
                 statistic=statistic
             )
         ]
@@ -204,15 +261,18 @@ class Sites:
         site_cookie = site_info.get("cookie")
         if not site_cookie:
             return False, "未配置站点Cookie", 0
-        ua = site_info.get("ua")
+        ua = site_info.get("ua") or Config().get_ua()
         site_url = StringUtils.get_base_url(site_info.get("signurl") or site_info.get("rssurl"))
         if not site_url:
             return False, "未配置站点地址", 0
+        # 站点特殊处理...
+        if '1ptba' in site_url:
+            site_url = site_url + '/index.php'
         chrome = ChromeHelper()
         if site_info.get("chrome") and chrome.get_status():
             # 计时
             start_time = datetime.now()
-            if not chrome.visit(url=site_url, ua=ua, cookie=site_cookie):
+            if not chrome.visit(url=site_url, ua=ua, cookie=site_cookie, proxy=site_info.get("proxy")):
                 return False, "Chrome模拟访问失败", 0
             # 循环检测是否过cf
             cloudflare = chrome.pass_cloudflare()
@@ -254,3 +314,52 @@ class Sites:
         if note:
             infos = json.loads(note)
         return infos
+
+    def add_site(self, name, site_pri,
+                 rssurl=None, signurl=None, cookie=None, note=None, rss_uses=None):
+        """
+        添加站点
+        """
+        ret = self.dbhelper.insert_config_site(name=name,
+                                               site_pri=site_pri,
+                                               rssurl=rssurl,
+                                               signurl=signurl,
+                                               cookie=cookie,
+                                               note=note,
+                                               rss_uses=rss_uses)
+        self.init_config()
+        return ret
+
+    def update_site(self, tid, name, site_pri,
+                    rssurl, signurl, cookie, note, rss_uses):
+        """
+        更新站点
+        """
+        ret = self.dbhelper.update_config_site(tid=tid,
+                                               name=name,
+                                               site_pri=site_pri,
+                                               rssurl=rssurl,
+                                               signurl=signurl,
+                                               cookie=cookie,
+                                               note=note,
+                                               rss_uses=rss_uses)
+        self.init_config()
+        return ret
+
+    def delete_site(self, siteid):
+        """
+        删除站点
+        """
+        ret = self.dbhelper.delete_config_site(siteid)
+        self.init_config()
+        return ret
+
+    def update_site_cookie(self, siteid, cookie, ua=None):
+        """
+        更新站点Cookie和UA
+        """
+        ret = self.dbhelper.update_site_cookie_ua(tid=siteid,
+                                                  cookie=cookie,
+                                                  ua=ua)
+        self.init_config()
+        return ret

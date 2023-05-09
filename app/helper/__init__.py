@@ -11,6 +11,7 @@ from .site_helper import SiteHelper
 from .ocr_helper import OcrHelper
 from .words_helper import WordsHelper
 from .submodule_helper import SubmoduleHelper
-from .cookiecloud_helper import CookieCloudHelper
 from .ffmpeg_helper import FfmpegHelper
 from .redis_helper import RedisHelper
+from .rss_helper import RssHelper
+from .plugin_helper import PluginHelper

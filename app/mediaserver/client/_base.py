@@ -1,4 +1,7 @@
 from abc import ABCMeta, abstractmethod
+from urllib.parse import quote
+
+from config import Config
 
 
 class _IMediaClient(metaclass=ABCMeta):
@@ -88,11 +91,20 @@ class _IMediaClient(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def get_image_by_id(self, item_id, image_type):
+    def get_remote_image_by_id(self, item_id, image_type):
         """
-        根据ItemId查询图片地址
+        根据ItemId查询远程图片地址
         :param item_id: 在服务器中的ID
         :param image_type: 图片的类弄地，poster或者backdrop等
+        :return: 图片对应在TMDB中的URL
+        """
+        pass
+
+    @abstractmethod
+    def get_local_image_by_id(self, item_id):
+        """
+        根据ItemId查询本地图片地址，需要有外网地址
+        :param item_id: 在服务器中的ID
         :return: 图片对应在TMDB中的URL
         """
         pass
@@ -128,6 +140,14 @@ class _IMediaClient(metaclass=ABCMeta):
         pass
 
     @abstractmethod
+    def get_play_url(self, item_id):
+        """
+        获取媒体库中的所有媒体
+        :param item_id: 媒体的的ID
+        """
+        pass
+
+    @abstractmethod
     def get_playing_sessions(self):
         """
         获取正在播放的会话
@@ -140,3 +160,21 @@ class _IMediaClient(metaclass=ABCMeta):
         解析Webhook报文，获取消息内容结构
         """
         pass
+
+    @staticmethod
+    def get_nt_image_url(url, remote=False):
+        """
+        获取NT中转内网图片的地址
+        :param: url: 图片的URL
+        :param: remote: 是否需要返回完整的URL
+        """
+        if not url:
+            return ""
+        if remote:
+            domain = Config().get_domain()
+            if domain:
+                return f"{domain}/img?url={quote(url)}"
+            else:
+                return ""
+        else:
+            return f"img?url={quote(url)}"

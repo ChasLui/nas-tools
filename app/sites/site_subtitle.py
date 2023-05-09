@@ -4,6 +4,7 @@ import shutil
 from lxml import etree
 
 import log
+from app.sites.sites import Sites
 from app.sites.siteconf import SiteConf
 from app.helper import SiteHelper
 from app.utils import RequestUtils, StringUtils, PathUtils, ExceptionUtils
@@ -13,15 +14,17 @@ from config import Config, RMT_SUBEXT
 class SiteSubtitle:
 
     siteconf = None
+    sites = None
     _save_tmp_path = None
 
     def __init__(self):
         self.siteconf = SiteConf()
+        self.sites = Sites()
         self._save_tmp_path = Config().get_temp_path()
         if not os.path.exists(self._save_tmp_path):
             os.makedirs(self._save_tmp_path)
 
-    def download(self, media_info, cookie, ua, download_dir):
+    def download(self, media_info, site_id, cookie, ua, download_dir):
         """
         从站点下载字幕文件，并保存到本地
         """
@@ -33,6 +36,11 @@ class SiteSubtitle:
         if not download_dir:
             log.warn("【Sites】未找到字幕下载目录")
             return
+
+        # 站点流控
+        if self.sites.check_ratelimit(site_id):
+            return
+
         # 读取网站代码
         request = RequestUtils(cookies=cookie, headers=ua)
         res = request.get_res(media_info.page_url)
@@ -104,6 +112,8 @@ class SiteSubtitle:
                     continue
             if sublink_list:
                 log.info(f"【Sites】{media_info.page_url} 页面字幕下载完成")
+            else:
+                log.warn(f"【Sites】{media_info.page_url} 页面未找到字幕下载链接")
         elif res is not None:
             log.warn(f"【Sites】连接 {media_info.page_url} 失败，状态码：{res.status_code}")
         else:

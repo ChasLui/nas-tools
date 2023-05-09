@@ -7,11 +7,12 @@ from selenium.webdriver.support import expected_conditions as es
 from selenium.webdriver.support.wait import WebDriverWait
 
 import log
-from app.helper import ChromeHelper, ProgressHelper, DbHelper, OcrHelper, SiteHelper
-from app.sites.sites import Sites
+from app.helper import ChromeHelper, ProgressHelper, OcrHelper, SiteHelper
 from app.sites.siteconf import SiteConf
+from app.sites.sites import Sites
 from app.utils import StringUtils, RequestUtils, ExceptionUtils
 from app.utils.commons import singleton
+from app.utils.types import ProgressKey
 
 
 @singleton
@@ -20,14 +21,12 @@ class SiteCookie(object):
     sites = None
     siteconf = None
     ocrhelper = None
-    dbhelpter = None
     captcha_code = {}
 
     def __init__(self):
         self.init_config()
 
     def init_config(self):
-        self.dbhelpter = DbHelper()
         self.progress = ProgressHelper()
         self.sites = Sites()
         self.siteconf = SiteConf()
@@ -51,7 +50,8 @@ class SiteCookie(object):
                              username,
                              password,
                              twostepcode=None,
-                             ocrflag=False):
+                             ocrflag=False,
+                             proxy=False):
         """
         获取站点cookie和ua
         :param url: 站点地址
@@ -59,6 +59,7 @@ class SiteCookie(object):
         :param password: 密码
         :param twostepcode: 两步验证
         :param ocrflag: 是否开启OCR识别
+        :param proxy: 是否使用内置代理
         :return: cookie、ua、message
         """
         if not url or not username or not password:
@@ -67,7 +68,7 @@ class SiteCookie(object):
         chrome = ChromeHelper()
         if not chrome.get_status():
             return None, None, "需要浏览器内核环境才能更新站点信息"
-        if not chrome.visit(url=url):
+        if not chrome.visit(url=url, proxy=proxy):
             return None, None, "Chrome模拟访问失败"
         # 循环检测是否过cf
         cloudflare = chrome.pass_cloudflare()
@@ -163,7 +164,7 @@ class SiteCookie(object):
                                     # 用户输入了
                                     captcha = self.get_code(code_key)
                                     log.info("【Sites】接收到验证码：%s" % captcha)
-                                    self.progress.update(ptype='sitecookie',
+                                    self.progress.update(ptype=ProgressKey.SiteCookie,
                                                          text="接收到验证码：%s" % captcha)
                                     break
                                 else:
@@ -174,7 +175,7 @@ class SiteCookie(object):
                                     else:
                                         code_bin = f"data:image/png;base64,{code_bin}"
                                     # 推送到前端
-                                    self.progress.update(ptype='sitecookie',
+                                    self.progress.update(ptype=ProgressKey.SiteCookie,
                                                          text=f"{code_bin}|{code_key}")
                                     time.sleep(1)
                             if not captcha:
@@ -186,6 +187,8 @@ class SiteCookie(object):
                         pass
                 # 提交登录
                 submit_obj.click()
+                # 等待页面刷新完毕
+                WebDriverWait(driver=chrome.browser, timeout=5).until(es.staleness_of(submit_obj))
             else:
                 return None, None, "未找到登录按钮"
         except Exception as e:
@@ -252,13 +255,13 @@ class SiteCookie(object):
         retcode = 0
         messages = []
         # 开始进度
-        self.progress.start('sitecookie')
+        self.progress.start(ProgressKey.SiteCookie)
         for site in sites:
             if not site.get("signurl") and not site.get("rssurl"):
                 log.info("【Sites】%s 未设置地址，跳过" % site.get("name"))
                 continue
             log.info("【Sites】开始更新 %s Cookie和User-Agent ..." % site.get("name"))
-            self.progress.update(ptype='sitecookie',
+            self.progress.update(ptype=ProgressKey.SiteCookie,
                                  text="开始更新 %s Cookie和User-Agent ..." % site.get("name"))
             # 登录页面地址
             baisc_url = StringUtils.get_base_url(site.get("signurl") or site.get("rssurl"))
@@ -272,30 +275,31 @@ class SiteCookie(object):
                                                         username=username,
                                                         password=password,
                                                         twostepcode=twostepcode,
-                                                        ocrflag=ocrflag)
+                                                        ocrflag=ocrflag,
+                                                        proxy=site.get("proxy"))
             # 更新进度
             curr_num += 1
             if not cookie:
                 log.error("【Sites】获取 %s 信息失败：%s" % (site.get("name"), msg))
                 messages.append("%s %s" % (site.get("name"), msg))
-                self.progress.update(ptype='sitecookie',
+                self.progress.update(ptype=ProgressKey.SiteCookie,
                                      value=round(100 * (curr_num / site_num)),
                                      text="%s %s" % (site.get("name"), msg))
                 retcode = 1
             else:
-                self.dbhelpter.update_site_cookie_ua(site.get("id"), cookie, ua)
+                self.sites.update_site_cookie(siteid=site.get("id"), cookie=cookie, ua=ua)
                 log.info("【Sites】更新 %s 的Cookie和User-Agent成功" % site.get("name"))
                 messages.append("%s %s" % (site.get("name"), msg or "更新Cookie和User-Agent成功"))
-                self.progress.update(ptype='sitecookie',
+                self.progress.update(ptype=ProgressKey.SiteCookie,
                                      value=round(100 * (curr_num / site_num)),
                                      text="%s %s" % (site.get("name"), msg or "更新Cookie和User-Agent成功"))
-        self.progress.end('sitecookie')
+        self.progress.end(ProgressKey.SiteCookie)
         return retcode, messages
 
     @staticmethod
     def get_captcha_base64(chrome, image_url):
         """
-        根据图片地址，获取验证码图片base64编码
+        根据图片地址，使用浏览器获取验证码图片base64编码
         """
         if not image_url:
             return ""

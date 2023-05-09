@@ -14,7 +14,6 @@ from config import Config
 
 @singleton
 class SiteConf:
-
     # 站点签到支持的识别XPATH
     _SITE_CHECKIN_XPATH = [
         '//a[@id="signed"]',
@@ -26,7 +25,8 @@ class SiteConf:
         '//input[@class="dt_button"][contains(@value, "打卡")]',
         '//a[contains(@href, "sign_in")]',
         '//a[contains(@onclick, "do_signin")]',
-        '//a[@id="do-attendance"]'
+        '//a[@id="do-attendance"]',
+        '//shark-icon-button[@href="attendance.php"]'
     ]
 
     # 站点详情页字幕下载链接识别XPATH
@@ -38,11 +38,13 @@ class SiteConf:
     _SITE_LOGIN_XPATH = {
         "username": [
             '//input[@name="username"]',
-            '//input[@id="form_item_username"]'
+            '//input[@id="form_item_username"]',
+            '//input[@id="username"]'
         ],
         "password": [
             '//input[@name="password"]',
-            '//input[@id="form_item_password"]'
+            '//input[@id="form_item_password"]',
+            '//input[@id="password"]'
         ],
         "captcha": [
             '//input[@name="imagestring"]',
@@ -154,6 +156,8 @@ class SiteConf:
                     for m in peer_count_str:
                         if m.isdigit():
                             peer_count_digit_str = peer_count_digit_str + m
+                        if m == " ":
+                            break
                     ret_attr["peer_count"] = int(peer_count_digit_str) if len(peer_count_digit_str) > 0 else 0
         except Exception as err:
             ExceptionUtils.exception_traceback(err)
@@ -167,7 +171,7 @@ class SiteConf:
         chrome = ChromeHelper(headless=True)
         if render and chrome.get_status():
             # 开渲染
-            if chrome.visit(url=url, cookie=cookie, ua=ua):
+            if chrome.visit(url=url, cookie=cookie, ua=ua, proxy=proxy):
                 # 等待页面加载完成
                 time.sleep(10)
                 return chrome.get_html()

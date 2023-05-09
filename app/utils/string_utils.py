@@ -5,10 +5,10 @@ import random
 import re
 from urllib import parse
 
+import cn2an
 import dateparser
 import dateutil.parser
 
-import cn2an
 from app.utils.exception_utils import ExceptionUtils
 from app.utils.types import MediaType
 
@@ -130,6 +130,8 @@ class StringUtils:
         :return:
         """
         int_val = 0
+        if not text:
+            return int_val
         try:
             int_val = int(text.strip().replace(',', ''))
         except Exception as e:
@@ -145,6 +147,8 @@ class StringUtils:
         :return:
         """
         float_val = 0.0
+        if not text:
+            return 0.0
         try:
             float_val = float(text.strip().replace(',', ''))
         except Exception as e:
@@ -177,8 +181,8 @@ class StringUtils:
         """
         将字节计算为文件大小描述（带单位的格式化后返回）
         """
-        if not size:
-            return size
+        if size is None:
+            return ""
         size = re.sub(r"\s|B|iB", "", str(size), re.I)
         if size.replace(".", "").isdigit():
             try:
@@ -239,6 +243,21 @@ class StringUtils:
         return ""
 
     @staticmethod
+    def get_url_sld(url):
+        """
+        获取URL的二级域名部分，不含端口，若为IP则返回IP
+        """
+        if not url:
+            return ""
+        _, netloc = StringUtils.get_url_netloc(url)
+        if not netloc:
+            return ""
+        netloc = netloc.split(":")[0].split(".")
+        if len(netloc) >= 2:
+            return netloc[-2]
+        return netloc[0]
+
+    @staticmethod
     def get_base_url(url):
         """
         获取URL根地址
@@ -252,12 +271,12 @@ class StringUtils:
     def clear_file_name(name):
         if not name:
             return None
-        return re.sub(r"[*?\\/\"<>~]", "", name, flags=re.IGNORECASE).replace(":", "：")
+        return re.sub(r"[*?\\/\"<>~|]", "", name, flags=re.IGNORECASE).replace(":", "：")
 
     @staticmethod
     def get_keyword_from_string(content):
         """
-        从检索关键字中拆分中年份、季、集、类型
+        从搜索关键字中拆分中年份、季、集、类型
         """
         if not content:
             return None, None, None, None, None
@@ -348,8 +367,10 @@ class StringUtils:
         :param date_format:
         :return:
         """
+        if isinstance(timestamp, str) and not timestamp.isdigit():
+            return timestamp
         try:
-            return datetime.datetime.fromtimestamp(timestamp).strftime(date_format)
+            return datetime.datetime.fromtimestamp(int(timestamp)).strftime(date_format)
         except Exception as e:
             ExceptionUtils.exception_traceback(e)
             return timestamp
@@ -428,7 +449,10 @@ class StringUtils:
             return ""
         hours = minutes // 60
         minutes = minutes % 60
-        return "%s小时%s分" % (hours, minutes)
+        if hours:
+            return "%s小时%s分" % (hours, minutes)
+        else:
+            return "%s分钟" % minutes
 
     @staticmethod
     def str_amount(amount, curr="$"):
@@ -438,3 +462,86 @@ class StringUtils:
         if not amount:
             return "0"
         return curr + format(amount, ",")
+
+    @staticmethod
+    def count_words(s):
+        """
+        计算字符串中包含的单词数量，只适用于简单的单行文本
+        :param s: 要计算的字符串
+        :return: 字符串中包含的单词数量
+        """
+        # 匹配英文单词
+        if re.match(r'^[A-Za-z0-9\s]+$', s):
+            # 如果是英文字符串，则按空格分隔单词，并计算单词数量
+            num_words = len(s.split())
+        else:
+            # 如果不是英文字符串，则计算字符数量
+            num_words = len(s)
+
+        return num_words
+
+    @staticmethod
+    def split_text(text, max_length):
+        """
+        把文本拆分为固定字节长度的数组，优先按换行拆分，避免单词内拆分
+        """
+        if not text:
+            yield ''
+        # 分行
+        lines = re.split('\n', text)
+        buf = ''
+        for line in lines:
+            if len(line.encode('utf-8')) > max_length:
+                # 超长行继续拆分
+                blank = ""
+                if re.match(r'^[A-Za-z0-9.\s]+', line):
+                    # 英文行按空格拆分
+                    parts = line.split()
+                    blank = " "
+                else:
+                    # 中文行按字符拆分
+                    parts = line
+                part = ''
+                for p in parts:
+                    if len((part + p).encode('utf-8')) > max_length:
+                        # 超长则Yield
+                        yield (buf + part).strip()
+                        buf = ''
+                        part = f"{blank}{p}"
+                    else:
+                        part = f"{part}{blank}{p}"
+                if part:
+                    # 将最后的部分追加到buf
+                    buf += part
+            else:
+                if len((buf + "\n" + line).encode('utf-8')) > max_length:
+                    # buf超长则Yield
+                    yield buf.strip()
+                    buf = line
+                else:
+                    # 短行直接追加到buf
+                    if buf:
+                        buf = f"{buf}\n{line}"
+                    else:
+                        buf = line
+        if buf:
+            # 处理文本末尾剩余部分
+            yield buf.strip()
+
+    @staticmethod
+    def is_one_month_ago(date_str):
+        """
+        判断日期是否早于一个月前
+        """
+        if not date_str:
+            return False
+        # 将日期字符串解析为日期对象
+        date_obj = datetime.datetime.strptime(date_str, '%Y-%m-%d')
+        # 计算当前日期和一个月前的日期
+        today = datetime.datetime.today()
+        one_month_ago = today - datetime.timedelta(days=30)
+        # 比较日期对象，判断是否早于一个月前
+        if date_obj < one_month_ago:
+            return True
+        else:
+            return False
